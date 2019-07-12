@@ -5,8 +5,9 @@ import untildify = require('untildify');
 /**
  * Given relative path, calculate absolute path.
  */
-export function GetAbsolutePath(partialPath: string): string {
-  const editorFilePath = vscode.window.activeTextEditor!.document.uri.fsPath;
+export function GetAbsolutePath(partialPath: string): vscode.Uri {
+  const editorFileUri = vscode.window.activeTextEditor!.document.uri;
+  const editorFilePath = editorFileUri.path;
   let basePath: string;
 
   if (partialPath.startsWith('/')) {
@@ -23,5 +24,7 @@ export function GetAbsolutePath(partialPath: string): string {
     basePath = path.dirname(editorFilePath);
   }
 
-  return basePath + partialPath;
+  return editorFileUri.with({
+    path: basePath + partialPath,
+  });
 }

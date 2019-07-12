@@ -1,7 +1,4 @@
 import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 
 import { RecordedState } from '../../state/recordedState';
 import { ReplaceState } from '../../state/replaceState';
@@ -1916,7 +1913,7 @@ class CommandTabInCommandline extends BaseCommand {
     return this.keysPressed[0] === '\n';
   }
 
-  private autoComplete(completionItems: string[], vimState: VimState) {
+  private autoComplete(completionItems: any, vimState: VimState) {
     if (commandLine.lastKeyPressed !== '<tab>') {
       if (/ /g.test(vimState.currentCommandlineText)) {
         // The regex here will match any text after the space or any text after the last / if it is present
@@ -1971,14 +1968,13 @@ class CommandTabInCommandline extends BaseCommand {
     } else {
       // File Completion
       const search = <RegExpExecArray>/.* (.*\/)/g.exec(vimState.currentCommandlineText);
-      const searchString = search !== null ? search[1] : '';
-      const fullPath = GetAbsolutePath(searchString);
-      const fileNames = fs
-        .readdirSync(fullPath, { withFileTypes: true })
-        .filter(fileEnt => fileEnt.isFile())
-        .map(fileEnt => fileEnt.name);
+      let searchString = search !== null ? search[1] : '';
 
-      vimState = this.autoComplete(fileNames, vimState);
+      let uri = GetAbsolutePath(searchString);
+      const dirTuples = await vscode.workspace.fs.readDirectory(uri);
+      const names = dirTuples.map(d => d[0]);
+
+      vimState = this.autoComplete(names, vimState);
     }
 
     commandLine.lastKeyPressed = key;
@@ -2765,9 +2761,14 @@ class CommandGoToDefinition extends BaseCommand {
   isJump = true;
 
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
-    await vscode.commands.executeCommand('editor.action.goToDeclaration');
+    const oldActiveEditor = vimState.editor;
 
-    if (vimState.editor === vscode.window.activeTextEditor) {
+    await vscode.commands.executeCommand('editor.action.goToDeclaration');
+    // `executeCommand` returns immediately before cursor is updated
+    // wait for the editor to update before updating the vim state
+    // https://github.com/VSCodeVim/Vim/issues/3277
+    await waitForCursorSync(1000);
+    if (oldActiveEditor === vimState.editor) {
       vimState.cursorStopPosition = Position.FromVSCodePosition(vimState.editor.selection.start);
     }
 

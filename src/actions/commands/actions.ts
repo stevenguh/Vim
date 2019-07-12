@@ -1913,7 +1913,7 @@ class CommandTabInCommandline extends BaseCommand {
     return this.keysPressed[0] === '\n';
   }
 
-  private autoComplete(completionItems: any, vimState: VimState) {
+  private autoComplete(completionItems: string[], vimState: VimState) {
     if (commandLine.lastKeyPressed !== '<tab>') {
       if (/ /g.test(vimState.currentCommandlineText)) {
         // The regex here will match any text after the space or any text after the last / if it is present
@@ -1947,14 +1947,17 @@ class CommandTabInCommandline extends BaseCommand {
       result = completionItems[++commandLine.autoCompleteIndex % completionItems.length];
     }
 
-    if (result !== undefined && !/ /g.test(vimState.currentCommandlineText)) {
-      vimState.currentCommandlineText = result;
-      vimState.statusBarCursorCharacterPos = result.length;
-    } else if (result !== undefined) {
-      const searchArray = <RegExpExecArray>/(.* .*\/|.* )/g.exec(vimState.currentCommandlineText);
-      vimState.currentCommandlineText = searchArray[0] + result;
+    if (result !== undefined) {
+      if (/ /g.test(vimState.currentCommandlineText)) {
+        const searchArray = <RegExpExecArray>/(.* .*\/|.* )/g.exec(vimState.currentCommandlineText);
+        vimState.currentCommandlineText = searchArray[0] + result;
+      } else {
+        vimState.currentCommandlineText = result;
+      }
+      // Reset the cursor to the end
       vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
     }
+
     return vimState;
   }
 

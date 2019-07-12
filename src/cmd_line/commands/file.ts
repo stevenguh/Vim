@@ -6,7 +6,44 @@ import * as vscode from 'vscode';
 import untildify = require('untildify');
 import { Logger } from '../../util/logger';
 
-const doesFileExist = util.promisify(fs.exists);
+async function doesFileExist(filePath: string) {
+  const activeTextEditor = vscode.window.activeTextEditor;
+  if (activeTextEditor) {
+    // Use the Uri from the active text editor so
+    // we can use the correct scheme and authority
+    // for remote fs like remote ssh
+    const activeUri = activeTextEditor.document.uri;
+    const updatedUri = activeUri.with({ path: filePath });
+    try {
+      await vscode.workspace.fs.stat(updatedUri);
+      return true;
+    } catch {
+      return false;
+    }
+  } else {
+    // fallback to local fs
+    const fsExists = util.promisify(fs.exists);
+    return fsExists(filePath);
+  }
+}
+
+async function createNewFile(filePath: string) {
+  const activeTextEditor = vscode.window.activeTextEditor;
+  if (activeTextEditor) {
+    // Use the Uri from the active text editor so
+    // we can use the correct scheme and authority
+    // for remote fs like remote ssh
+    const activeUri = activeTextEditor.document.uri;
+    const updatedUri = activeUri.with({ path: filePath });
+    await vscode.workspace.fs.writeFile(updatedUri, new Uint8Array(), {
+      create: true,
+      overwrite: false,
+    });
+  } else {
+    // fallback to local fs
+    await util.promisify(fs.close)(await util.promisify(fs.open)(filePath, 'w'));
+  }
+}
 
 export enum FilePosition {
   NewWindowVerticalSplit,
@@ -110,7 +147,7 @@ export class FileCommand extends node.CommandBase {
 
         if (!fileExists) {
           if (this._arguments.createFileIfNotExists) {
-            await util.promisify(fs.close)(await util.promisify(fs.open)(filePath, 'w'));
+            await createNewFile(filePath);
           } else {
             this._logger.error(`${filePath} does not exist.`);
             return;

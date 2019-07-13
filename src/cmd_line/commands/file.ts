@@ -68,7 +68,7 @@ export class FileCommand extends node.CommandBase {
     this._arguments = args;
 
     if (this.arguments.name) {
-      this._arguments.name = <string>untildify(this.arguments.name);
+      this._arguments.name = this.arguments.name;
     }
   }
 
@@ -83,7 +83,8 @@ export class FileCommand extends node.CommandBase {
     }
 
     // Need to do this before the split since it loses the activeTextEditor
-    let editorFilePath = vscode.window.activeTextEditor!.document.uri.fsPath;
+    const editorFileUri = vscode.window.activeTextEditor!.document.uri;
+    let editorFilePath = editorFileUri.fsPath;
 
     // Do the split if requested
     let split = false;
@@ -113,6 +114,11 @@ export class FileCommand extends node.CommandBase {
     }
 
     let filePath = '';
+
+    // Only untidify when the currently open page and file completion is local
+    if (this.arguments.name && editorFileUri.scheme === 'file') {
+      this._arguments.name = <string>untildify(this.arguments.name);
+    }
 
     // Using the empty string will request to open a file
     if (this._arguments.name === '') {

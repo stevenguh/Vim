@@ -2008,7 +2008,7 @@ class CommandInsertInCommandline extends BaseCommand {
         vimState.currentCommandlineText.slice(vimState.statusBarCursorCharacterPos);
       vimState.statusBarCursorCharacterPos = Math.max(vimState.statusBarCursorCharacterPos - 1, 0);
     } else if (key === '\n') {
-      await commandLine.Run(vimState.currentCommandlineText, vimState);
+      await commandLine.Run(vimState.currentCommandlineText.trim(), vimState);
       await vimState.setCurrentMode(ModeName.Normal);
       return vimState;
     } else if (key === '<up>') {

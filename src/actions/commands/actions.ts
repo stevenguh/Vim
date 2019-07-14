@@ -1988,6 +1988,28 @@ class CommandTabInCommandline extends BaseCommand {
     vimState.currentCommandlineText += restCmd;
   }
 
+  private static async readDirectory(directoryUri: vscode.Uri, addCurrentAndUp: boolean) {
+    try {
+      const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
+      return directoryResult
+        .map(
+          d =>
+            <[string, vscode.FileType]>[
+              // TODO window... :(
+              d[0] + (d[1] === vscode.FileType.Directory ? '/' : ''),
+              d[1],
+            ]
+        )
+        .concat(
+          addCurrentAndUp
+            ? [['./', vscode.FileType.Directory], ['../', vscode.FileType.Directory]]
+            : []
+        );
+    } catch {
+      return <[string, vscode.FileType][]>[];
+    }
+  }
+
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
     const key = this.keysPressed[0];
     const tabFoward = key === '<tab>';
@@ -2005,7 +2027,7 @@ class CommandTabInCommandline extends BaseCommand {
     let evalCmd = currentCmd.slice(0, currsorPos);
     let restCmd = currentCmd.slice(currsorPos);
     // If the cmd only contins nothing, or a word
-    if (/\s*\w+$/.test(evalCmd)) {
+    if (/^\s*\w+$/.test(evalCmd)) {
       // no key has entered after the completion so cycle through the list
       let commands = Object.keys(commandParsers)
         .filter(cmd => cmd.startsWith(evalCmd))
@@ -2036,98 +2058,136 @@ class CommandTabInCommandline extends BaseCommand {
       const filePathInCmd = evalCmd.substring(regex.lastIndex);
       const currentUri = vscode.window.activeTextEditor!.document.uri;
       // If empty use current directory
-      if (filePathInCmd.length === 0) {
-        const parentDirectoryUri = currentUri.with({ path: path.posix.dirname(currentUri.path) });
-        const directoryResult = await vscode.workspace.fs.readDirectory(parentDirectoryUri);
-        let names = directoryResult.map(
-          d => d[0] + (d[1] === vscode.FileType.Directory ? '/' : '')
-        );
-        names = names.length === 0 ? [''] : names;
+      // if (filePathInCmd.length === 0) {
+      //   const parentDirectoryUri = currentUri.with({ path: path.posix.dirname(currentUri.path) });
+      //   const directoryResult = await vscode.workspace.fs.readDirectory(parentDirectoryUri);
+      //   let names = directoryResult.map(
+      //     d => d[0] + (d[1] === vscode.FileType.Directory ? '/' : '')
+      //   );
+      //   names = names.length === 0 ? [''] : names;
 
-        commandLine.autoCompleteIndex = tabFoward ? 0 : names.length - 1;
-        commandLine.autoCompleteItems = names;
-        commandLine.preCompleteChatacterPos = currsorPos;
-        commandLine.preCompleteCommand = currentCmd;
+      //   commandLine.autoCompleteIndex = tabFoward ? 0 : names.length - 1;
+      //   commandLine.autoCompleteItems = names;
+      //   commandLine.preCompleteChatacterPos = currsorPos;
+      //   commandLine.preCompleteCommand = currentCmd;
 
-        vimState.currentCommandlineText = evalCmd + names[commandLine.autoCompleteIndex];
-        vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-        vimState.currentCommandlineText += restCmd;
+      //   vimState.currentCommandlineText = evalCmd + names[commandLine.autoCompleteIndex];
+      //   vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+      //   vimState.currentCommandlineText += restCmd;
 
-        commandLine.lastKeyPressed = key;
-        return vimState;
-      }
+      //   commandLine.lastKeyPressed = key;
+      //   return vimState;
+      // }
 
       let baseName = path.basename(filePathInCmd);
       const baseNameIndex = evalCmd.lastIndexOf(baseName);
       // Add the seperator (unix /), which is used to indicate a directory back to the baseName
       baseName += evalCmd.slice(baseNameIndex + baseName.length);
 
-      let newPath;
+      let newPath: string;
       if (path.posix.isAbsolute(filePathInCmd)) {
         newPath = path.dirname(filePathInCmd);
       } else {
         // TODO handle ~/aadsas since it returns not absolute
-        newPath = path.resolve(currentUri.fsPath, path.dirname(filePathInCmd));
+        newPath = path.resolve(path.dirname(currentUri.fsPath), path.dirname(filePathInCmd));
       }
 
       const directoryUri = currentUri.with({ path: newPath });
-      try {
-        const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
-        let filteredResult = directoryResult
-        // TODO window... :(
-        .map(d => <[string, vscode.FileType]>[d[0] + (d[1] === vscode.FileType.Directory ? '/' : ''), d[1]])
-        .filter(d => d[0].startsWith(baseName));
-        let filteredResultNames = filteredResult.map(d => d[0]);
 
-        if (filteredResult.length === 0) {
-          // No match nothing to do
-          commandLine.autoCompleteItems = [];
-          commandLine.lastKeyPressed = key;
-          return vimState;
-        } else if (filteredResult.length === 1) {
-          if (baseName === filteredResultNames[0]) {
-            // if it is directory, search again in that directory
-            if (filteredResult[0][1] === vscode.FileType.Directory) {
-              const directoryUri = currentUri.with({ path: newPath });
+      let filteredResult = await CommandTabInCommandline.readDirectory(directoryUri, false);
+      filteredResult = filteredResult.filter(d => d[0].startsWith(baseName));
+      let filteredResultNames = filteredResult.map(d => d[0]);
 
-            } else {
-              // exact match...nothing to do ..
+      // if (filteredResult.length === 0) {
+      //   // No match nothing to do
+      //   commandLine.autoCompleteItems = [];
+      //   commandLine.lastKeyPressed = key;
+      //   return vimState;
+      // } else
+      if (filteredResult.length === 1) {
+        if (baseName === filteredResultNames[0]) {
+          // if it is directory, search again in that directory
+          if (filteredResult[0][1] === vscode.FileType.Directory) {
+            let searchUri = directoryUri;
+            let recursivePaths: string[] = [];
+            do {
+              recursivePaths.push(filteredResult[0][0]);
+              searchUri = searchUri.with({
+                path: path.resolve(directoryUri.fsPath, filteredResult[0][0]),
+              });
+              filteredResult = await CommandTabInCommandline.readDirectory(
+                searchUri,
+                baseName.startsWith('.')
+              );
+            } while (
+              filteredResult.length === 1 &&
+              filteredResult[0][1] === vscode.FileType.Directory
+            );
+
+            if (filteredResult.length === 1) {
+              // Exact match, fill it
+              vimState.currentCommandlineText =
+                evalCmd.slice(0, baseNameIndex) +
+                path.join(...recursivePaths, filteredResult[0][0]) +
+                restCmd;
+              vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+              // Reset
               commandLine.autoCompleteItems = [];
               commandLine.lastKeyPressed = key;
               return vimState;
+            } else {
+              filteredResultNames = filteredResult.map(d => d[0]).sort();
+              commandLine.autoCompleteIndex = tabFoward ? 0 : filteredResultNames.length - 1;
+              commandLine.autoCompleteItems = filteredResultNames;
+              const prefilledCmd = evalCmd.slice(0, baseNameIndex) + path.join(...recursivePaths);
+              commandLine.preCompleteCommand = prefilledCmd;
+              commandLine.preCompleteChatacterPos = prefilledCmd.length;
+
+              vimState.currentCommandlineText =
+                prefilledCmd + filteredResultNames[commandLine.autoCompleteIndex];
+              vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+              vimState.currentCommandlineText += restCmd;
+
+              commandLine.lastKeyPressed = key;
+              return vimState;
             }
+
+            // TODO recusive?
           } else {
-            // if it's not an exact match, fill it
-            vimState.currentCommandlineText =
-              path.join(evalCmd.slice(0, baseNameIndex), filteredResultNames[0]) + restCmd;
-            vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-            // Reset
+            // exact file name matched...nothing to do ..
             commandLine.autoCompleteItems = [];
             commandLine.lastKeyPressed = key;
             return vimState;
           }
         } else {
-          // has a list that start with the entered name
-          filteredResultNames = filteredResultNames.length === 0 ? [''] : filteredResultNames;
-
-          const r = filteredResultNames
-            .map(cmd => cmd.slice(cmd.search(baseName) + baseName.length))
-            .sort();
-
-          commandLine.autoCompleteIndex = tabFoward ? 0 : r.length - 1;
-          commandLine.autoCompleteItems = r;
-          commandLine.preCompleteChatacterPos = currsorPos;
-          commandLine.preCompleteCommand = currentCmd;
-
-          vimState.currentCommandlineText = evalCmd + r[commandLine.autoCompleteIndex];
+          // if it's not an exact match, fill it
+          vimState.currentCommandlineText =
+            path.join(evalCmd.slice(0, baseNameIndex), filteredResultNames[0]) + restCmd;
           vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-          vimState.currentCommandlineText += restCmd;
-
+          // Reset
+          commandLine.autoCompleteItems = [];
           commandLine.lastKeyPressed = key;
           return vimState;
         }
-      } catch {
-        // Reset
+      } else {
+        // has a list that start with the entered name
+        filteredResultNames = filteredResultNames.length === 0 ? [''] : filteredResultNames;
+
+        const r = filteredResultNames
+          .map(cmd => cmd.slice(cmd.search(baseName) + baseName.length))
+          .sort();
+
+        commandLine.autoCompleteIndex = tabFoward ? 0 : r.length - 1;
+        commandLine.autoCompleteItems = r;
+        commandLine.preCompleteChatacterPos = currsorPos;
+        commandLine.preCompleteCommand = currentCmd;
+
+        vimState.currentCommandlineText = evalCmd + r[commandLine.autoCompleteIndex];
+        vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+        vimState.currentCommandlineText += restCmd;
+
+        commandLine.lastKeyPressed = key;
+        return vimState;
       }
       // If at root / or /c:/
       // If starts with . and ..?

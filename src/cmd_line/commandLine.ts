@@ -30,6 +30,13 @@ class CommandLine {
    */
   public autoCompleteIndex = 0;
 
+  public autoCompleteItems: string[] = [];
+
+  public preCompleteChatacterPos = 0;
+  public preCompleteCommand = '';
+
+  public autoComplateCmd = '';
+
   /**
    * for checking the last pressed key in command mode
    *

@@ -13,7 +13,7 @@ import { Position, PositionDiff } from './../../common/motion/position';
 import { Range } from './../../common/motion/range';
 import { NumericString } from './../../common/number/numericString';
 import { configuration } from './../../configuration/configuration';
-import { ModeName } from './../../mode/mode';
+import { ModeName, Mode } from './../../mode/mode';
 import { VisualBlockMode } from './../../mode/modes';
 import { Register, RegisterMode } from './../../register/register';
 import { SearchDirection, SearchState } from './../../state/searchState';
@@ -27,6 +27,9 @@ import { Jump } from '../../jumps/jump';
 import { commandParsers } from '../../cmd_line/subparser';
 import { StatusBar } from '../../statusBar';
 import { GetAbsolutePath } from '../../util/path';
+import * as path from 'path';
+import untildify = require('untildify');
+
 import {
   ReportLinesChanged,
   ReportClear,
@@ -1902,18 +1905,23 @@ class CommandNavigateInCommandlineOrSearchMode extends BaseCommand {
     } else if (key === '<left>') {
       vimState.statusBarCursorCharacterPos = Math.max(vimState.statusBarCursorCharacterPos - 1, 0);
     }
+
+    commandLine.lastKeyPressed = key;
     return vimState;
   }
 }
+
+// Command tab  backward from behind shift tab
 @RegisterAction
 class CommandTabInCommandline extends BaseCommand {
   modes = [ModeName.CommandlineInProgress];
-  keys = ['<tab>'];
+  keys = [['<tab>'], ['<shift+tab>']];
   runsOnceForEveryCursor() {
     return this.keysPressed[0] === '\n';
   }
 
   private autoComplete(completionItems: string[], vimState: VimState) {
+    // If the last key pressed which means to recyce the items
     if (commandLine.lastKeyPressed !== '<tab>') {
       if (/ /g.test(vimState.currentCommandlineText)) {
         // The regex here will match any text after the space or any text after the last / if it is present
@@ -1921,11 +1929,10 @@ class CommandTabInCommandline extends BaseCommand {
           /(?:.* .*\/|.* )(.*)/g.exec(vimState.currentCommandlineText)
         );
         commandLine.autoCompleteText = search[1];
-        commandLine.autoCompleteIndex = 0;
       } else {
         commandLine.autoCompleteText = vimState.currentCommandlineText;
-        commandLine.autoCompleteIndex = 0;
       }
+      commandLine.autoCompleteIndex = 0;
     }
 
     completionItems = completionItems.filter(completionItem =>
@@ -1961,8 +1968,179 @@ class CommandTabInCommandline extends BaseCommand {
     return vimState;
   }
 
+  private cycleCompletion(vimState: VimState, tabFoward: boolean) {
+    const autoCompleteItems = commandLine.autoCompleteItems;
+    if (autoCompleteItems.length === 0) {
+      return;
+    }
+
+    commandLine.autoCompleteIndex = tabFoward
+      ? (commandLine.autoCompleteIndex + 1) % autoCompleteItems.length
+      : (commandLine.autoCompleteIndex - 1 + autoCompleteItems.length) % autoCompleteItems.length;
+
+    const lastPos = commandLine.preCompleteChatacterPos;
+    const lastCmd = commandLine.preCompleteCommand;
+    const evalCmd = lastCmd.slice(0, lastPos);
+    const restCmd = lastCmd.slice(lastPos);
+
+    vimState.currentCommandlineText = evalCmd + autoCompleteItems[commandLine.autoCompleteIndex];
+    vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+    vimState.currentCommandlineText += restCmd;
+  }
+
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
     const key = this.keysPressed[0];
+    const tabFoward = key === '<tab>';
+
+    if (commandLine.lastKeyPressed === '<tab>' || commandLine.lastKeyPressed === '<shift+tab>') {
+      this.cycleCompletion(vimState, tabFoward);
+      commandLine.lastKeyPressed = key;
+      return vimState;
+    }
+
+    const currentCmd = vimState.currentCommandlineText;
+    const currsorPos = vimState.statusBarCursorCharacterPos;
+
+    // sub string since vim do completion before the currsor
+    let evalCmd = currentCmd.slice(0, currsorPos);
+    let restCmd = currentCmd.slice(currsorPos);
+    // If the cmd only contins nothing, or a word
+    if (/\s*\w+$/.test(evalCmd)) {
+      // no key has entered after the completion so cycle through the list
+      let commands = Object.keys(commandParsers)
+        .filter(cmd => cmd.startsWith(evalCmd))
+        // Remove the already typed portion in the array
+        .map(cmd => cmd.slice(cmd.search(evalCmd) + evalCmd.length))
+        .sort();
+      commands = commands.length === 0 ? [''] : commands;
+
+      commandLine.autoCompleteIndex = tabFoward ? 0 : commands.length - 1;
+      commandLine.autoCompleteItems = commands;
+      commandLine.preCompleteChatacterPos = currsorPos;
+      commandLine.preCompleteCommand = currentCmd;
+
+      vimState.currentCommandlineText = evalCmd + commands[commandLine.autoCompleteIndex];
+      vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+      vimState.currentCommandlineText += restCmd;
+
+      commandLine.lastKeyPressed = key;
+      return vimState;
+    }
+
+    // file completion by searching if there is a space after the first word/command
+    // ideally it should be a process of white listing to selected commands like :e and :vsp
+    const regex = /\s*\w+\s+/g;
+    const result = regex.exec(evalCmd);
+    if (result) {
+      // TODO handle WIN 32 :(
+      const filePathInCmd = evalCmd.substring(regex.lastIndex);
+      const currentUri = vscode.window.activeTextEditor!.document.uri;
+      // If empty use current directory
+      if (filePathInCmd.length === 0) {
+        const parentDirectoryUri = currentUri.with({ path: path.posix.dirname(currentUri.path) });
+        const directoryResult = await vscode.workspace.fs.readDirectory(parentDirectoryUri);
+        let names = directoryResult.map(
+          d => d[0] + (d[1] === vscode.FileType.Directory ? '/' : '')
+        );
+        names = names.length === 0 ? [''] : names;
+
+        commandLine.autoCompleteIndex = tabFoward ? 0 : names.length - 1;
+        commandLine.autoCompleteItems = names;
+        commandLine.preCompleteChatacterPos = currsorPos;
+        commandLine.preCompleteCommand = currentCmd;
+
+        vimState.currentCommandlineText = evalCmd + names[commandLine.autoCompleteIndex];
+        vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+        vimState.currentCommandlineText += restCmd;
+
+        commandLine.lastKeyPressed = key;
+        return vimState;
+      }
+
+      let baseName = path.basename(filePathInCmd);
+      const baseNameIndex = evalCmd.lastIndexOf(baseName);
+      // Add the seperator (unix /), which is used to indicate a directory back to the baseName
+      baseName += evalCmd.slice(baseNameIndex + baseName.length);
+
+      let newPath;
+      if (path.posix.isAbsolute(filePathInCmd)) {
+        newPath = path.dirname(filePathInCmd);
+      } else {
+        // TODO handle ~/aadsas since it returns not absolute
+        newPath = path.resolve(currentUri.fsPath, path.dirname(filePathInCmd));
+      }
+
+      const directoryUri = currentUri.with({ path: newPath });
+      try {
+        const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
+        let filteredResult = directoryResult
+        // TODO window... :(
+        .map(d => <[string, vscode.FileType]>[d[0] + (d[1] === vscode.FileType.Directory ? '/' : ''), d[1]])
+        .filter(d => d[0].startsWith(baseName));
+        let filteredResultNames = filteredResult.map(d => d[0]);
+
+        if (filteredResult.length === 0) {
+          // No match nothing to do
+          commandLine.autoCompleteItems = [];
+          commandLine.lastKeyPressed = key;
+          return vimState;
+        } else if (filteredResult.length === 1) {
+          if (baseName === filteredResultNames[0]) {
+            // if it is directory, search again in that directory
+            if (filteredResult[0][1] === vscode.FileType.Directory) {
+              const directoryUri = currentUri.with({ path: newPath });
+
+            } else {
+              // exact match...nothing to do ..
+              commandLine.autoCompleteItems = [];
+              commandLine.lastKeyPressed = key;
+              return vimState;
+            }
+          } else {
+            // if it's not an exact match, fill it
+            vimState.currentCommandlineText =
+              path.join(evalCmd.slice(0, baseNameIndex), filteredResultNames[0]) + restCmd;
+            vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+            // Reset
+            commandLine.autoCompleteItems = [];
+            commandLine.lastKeyPressed = key;
+            return vimState;
+          }
+        } else {
+          // has a list that start with the entered name
+          filteredResultNames = filteredResultNames.length === 0 ? [''] : filteredResultNames;
+
+          const r = filteredResultNames
+            .map(cmd => cmd.slice(cmd.search(baseName) + baseName.length))
+            .sort();
+
+          commandLine.autoCompleteIndex = tabFoward ? 0 : r.length - 1;
+          commandLine.autoCompleteItems = r;
+          commandLine.preCompleteChatacterPos = currsorPos;
+          commandLine.preCompleteCommand = currentCmd;
+
+          vimState.currentCommandlineText = evalCmd + r[commandLine.autoCompleteIndex];
+          vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+          vimState.currentCommandlineText += restCmd;
+
+          commandLine.lastKeyPressed = key;
+          return vimState;
+        }
+      } catch {
+        // Reset
+      }
+      // If at root / or /c:/
+      // If starts with . and ..?
+      // If directory has only one directory, your can't cycle through, the tab is done
+      // If the directory has more than one directory or files, cycle from empty to other options
+    }
+
+    /*
+    // Seach for space if there space if the command
+    // const regex = /\s+/g;
+    // const  =
+
+    // const spaceAt = vimState.currentCommandlineText.search(/ /g);
 
     if (!/ /g.test(vimState.currentCommandlineText)) {
       // Command completion
@@ -1979,7 +2157,9 @@ class CommandTabInCommandline extends BaseCommand {
 
       vimState = this.autoComplete(names, vimState);
     }
-
+*/
+    // Reset
+    commandLine.autoCompleteItems = [];
     commandLine.lastKeyPressed = key;
     return vimState;
   }
@@ -2065,8 +2245,11 @@ class CommandEscInCommandline extends BaseCommand {
   }
 
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
+    const key = this.keysPressed[0];
+
     await vimState.setCurrentMode(ModeName.Normal);
 
+    commandLine.lastKeyPressed = key;
     return vimState;
   }
 }
@@ -2105,6 +2288,7 @@ class CommandCtrlVInCommandline extends BaseCommand {
   }
 
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
+    const key = this.keysPressed[0];
     const textFromClipboard = await Clipboard.Paste();
 
     let modifiedString = vimState.currentCommandlineText.split('');
@@ -2113,6 +2297,7 @@ class CommandCtrlVInCommandline extends BaseCommand {
 
     vimState.statusBarCursorCharacterPos += textFromClipboard.length;
 
+    commandLine.lastKeyPressed = key;
     return vimState;
   }
 }
@@ -2126,6 +2311,7 @@ class CommandCmdVInCommandline extends BaseCommand {
   }
 
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
+    const key = this.keysPressed[0];
     const textFromClipboard = await Clipboard.Paste();
 
     let modifiedString = vimState.currentCommandlineText.split('');
@@ -2134,6 +2320,7 @@ class CommandCmdVInCommandline extends BaseCommand {
 
     vimState.statusBarCursorCharacterPos += textFromClipboard.length;
 
+    commandLine.lastKeyPressed = key;
     return vimState;
   }
 }

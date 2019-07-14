@@ -133,6 +133,7 @@ export class FileCommand extends node.CommandBase {
       }
     } else {
       // Using a filename, open or create the file
+      // remove file://
       this._arguments.name = this._arguments.name.replace(/^file:\/\//, '');
 
       filePath = path.isAbsolute(this._arguments.name)

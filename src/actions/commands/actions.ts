@@ -1988,21 +1988,24 @@ class CommandTabInCommandline extends BaseCommand {
     vimState.currentCommandlineText += restCmd;
   }
 
-  private static async readDirectory(directoryUri: vscode.Uri, addCurrentAndUp: boolean) {
+  private static async readDirectory(
+    directoryUri: vscode.Uri,
+    sep: string,
+    addCurrentAndUp: boolean
+  ) {
     try {
       const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
       return directoryResult
         .map(
           d =>
             <[string, vscode.FileType]>[
-              // TODO window... :(
-              d[0] + (d[1] === vscode.FileType.Directory ? '/' : ''),
+              d[0] + (d[1] === vscode.FileType.Directory ? sep : ''),
               d[1],
             ]
         )
         .concat(
           addCurrentAndUp
-            ? [['./', vscode.FileType.Directory], ['../', vscode.FileType.Directory]]
+            ? [[`.${sep}`, vscode.FileType.Directory], [`..${sep}`, vscode.FileType.Directory]]
             : []
         );
     } catch {
@@ -2010,12 +2013,28 @@ class CommandTabInCommandline extends BaseCommand {
     }
   }
 
+  private handle;
+
   private separatePath(searchPath: string, separator: string) {
+    // Speical handle for UNC path on windows
+    const _fwSlash = '\\';
+    if (separator === path.win32.sep) {
+      if (searchPath[0] === _fwSlash && searchPath[1] === _fwSlash) {
+        const idx = searchPath.indexOf(_fwSlash, 2);
+        if (idx === -1) {
+          // If there isn't a complete UNC path,
+          // return the incomplete UNC as baseName
+          // e.g. \\test-server is an incomplete path
+          // and \\test-server\ is a complete path
+          return [searchPath, ''];
+        }
+      }
+    }
+
     let baseNameIndex = searchPath.lastIndexOf(separator) + 1;
     const baseName = searchPath.slice(baseNameIndex);
     const dirName = searchPath.slice(0, baseNameIndex);
-    // baseNameIndex length if not found
-    return <[string, string, number]>[dirName, baseName, baseNameIndex];
+    return [dirName, baseName];
   }
 
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
@@ -2068,108 +2087,85 @@ class CommandTabInCommandline extends BaseCommand {
     const result = regex.exec(evalCmd);
     if (result) {
       // TODO handle WIN 32 :(
-      const filePathInCmd = evalCmd.substring(regex.lastIndex);
+      let filePathInCmd = evalCmd.substring(regex.lastIndex);
       const currentUri = vscode.window.activeTextEditor!.document.uri;
+      let isWindows: boolean;
       if (currentUri.scheme === 'untitled') {
         // use the local fs
-        // cann't open from untitled since we don't know the path..
-        // return;
+        // can only do absulote path and local
+        isWindows = path !== path.posix;
+      } else {
+        // 'file' return full path
+        // 'vscode-remote' retun full path
+        // and assuming other scheme return full path
+        isWindows = currentUri.scheme === 'file' && currentUri.fsPath[0] !== '/';
       }
-      const isPosix = currentUri.fsPath[0] === '/';
-      const p = isPosix ? path.posix : path.win32;
 
-      // If empty use current directory
-      // if (filePathInCmd.length === 0) {
-      //   const parentDirectoryUri = currentUri.with({ path: path.posix.dirname(currentUri.path) });
-      //   const directoryResult = await vscode.workspace.fs.readDirectory(parentDirectoryUri);
-      //   let names = directoryResult.map(
-      //     d => d[0] + (d[1] === vscode.FileType.Directory ? '/' : '')
-      //   );
-      //   names = names.length === 0 ? [''] : names;
+      const p = isWindows ? path.win32 : path.posix;
+      if (isWindows) {
+        // normalize / to \ on windows
+        filePathInCmd = filePathInCmd.replace(/\//g, '\\');
 
-      //   commandLine.autoCompleteIndex = tabFoward ? 0 : names.length - 1;
-      //   commandLine.autoCompleteItems = names;
-      //   commandLine.preCompleteChatacterPos = currsorPos;
-      //   commandLine.preCompleteCommand = currentCmd;
+        // And update on users display
+        evalCmd = evalCmd.slice(0, regex.lastIndex) + filePathInCmd;
+      }
 
-      //   vimState.currentCommandlineText = evalCmd + names[commandLine.autoCompleteIndex];
-      //   vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-      //   vimState.currentCommandlineText += restCmd;
+      if (currentUri.scheme === 'file' || currentUri.scheme === 'untitled') {
+        // if the currently opened tab is file or unititled, then we can utidify
+        // because the tab is in the user space
+        filePathInCmd = untildify(filePathInCmd);
+      }
 
-      //   commandLine.lastKeyPressed = key;
-      //   return vimState;
-      // }
-      let [dirName, baseName, baseNameIndex] = this.separatePath(filePathInCmd, p.sep);
+      let [dirName, baseName] = this.separatePath(filePathInCmd, p.sep);
       let newPath: string;
       if (p.isAbsolute(dirName)) {
         newPath = dirName;
       } else {
-        // TODO handle ~/aadsas since it returns not absolute
-        if (currentUri.scheme === 'file') {
-          // TODO handle ~/adfa
-        }
-
-        newPath = p.resolve(p.dirname(currentUri.fsPath), dirName);
+        newPath = p.join(p.dirname(currentUri.fsPath), dirName);
       }
 
-      // let baseName = path.basename(filePathInCmd);
-      // const baseNameIndex = evalCmd.lastIndexOf(baseName);
-      // // Add the seperator (unix /), which is used to indicate a directory back to the baseName
-      // baseName += evalCmd.slice(baseNameIndex + baseName.length);
-
-      // let newPath: string;
-      // if (path.posix.isAbsolute(filePathInCmd)) {
-      //   newPath = path.dirname(filePathInCmd);
-      // } else {
-      //   // TODO handle ~/aadsas since it returns not absolute
-      //   newPath = path.resolve(path.dirname(currentUri.fsPath), path.dirname(filePathInCmd));
-      // }
-      const directoryUri = currentUri.with({ path: newPath });
+      const directoryUri = isWindows
+        ? // create new local Uri when it's on windows (doesn't support remote)
+          // Use file will also works for UNC paths like //server1/folder
+          vscode.Uri.file(newPath)
+        : currentUri.with({
+            // search local file with it's untitled
+            scheme: currentUri.scheme === 'untitled' ? 'file' : currentUri.scheme,
+            path: newPath,
+          });
+      // TODO when on untitled page and :e <tab>, it will query / result
       let filteredResult = await CommandTabInCommandline.readDirectory(
         directoryUri,
+        p.sep,
+        // test if the baseName is . or ..
         /^\.\.?$/g.test(baseName)
       );
       filteredResult = filteredResult.filter(d => d[0].startsWith(baseName));
-      if (filteredResult.length === 0) {
-        commandLine.autoCompleteItems = [];
-
-        commandLine.lastKeyPressed = key;
-        return vimState;
-      } else if (filteredResult.length === 1) {
-        commandLine.autoCompleteItems = [];
-
-        vimState.currentCommandlineText =
-          evalCmd.slice(0, evalCmd.length - baseName.length) + filteredResult[0][0];
-        vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-        vimState.currentCommandlineText += restCmd;
-
-        commandLine.lastKeyPressed = key;
-        return vimState;
-      } else {
+      if (filteredResult.length > 0) {
         const items = filteredResult
           .map(r => r[0].slice(r[0].search(baseName) + baseName.length))
           .sort();
 
+        // if the length is 1 do not set the items so effective we filled command, with the next to to autofill base on the refiled command
+        commandLine.autoCompleteItems = items.length === 1 ? [] : items;
         commandLine.autoCompleteIndex = tabFoward ? 0 : items.length - 1;
-        commandLine.autoCompleteItems = items;
         commandLine.preCompleteChatacterPos = currsorPos;
         commandLine.preCompleteCommand = currentCmd;
 
-        vimState.currentCommandlineText =
-          evalCmd.slice(0, evalCmd.length - baseName.length) + items[commandLine.autoCompleteIndex];
+        vimState.currentCommandlineText = evalCmd + items[commandLine.autoCompleteIndex];
         vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
         vimState.currentCommandlineText += restCmd;
 
         commandLine.lastKeyPressed = key;
         return vimState;
       }
-      let filteredResultNames = filteredResult.map(d => d[0]);
+      // let filteredResultNames = filteredResult.map(d => d[0]);
       // 0 clear
       // 1 fill and clear
       // >1
 
       // has a list that start with the entered name
-      filteredResultNames = filteredResultNames.length === 0 ? [''] : filteredResultNames;
+      // filteredResultNames = filteredResultNames.length === 0 ? [''] : filteredResultNames;
 
       // If at root / or /c:/
       // If starts with . and ..?
@@ -2203,6 +2199,11 @@ class CommandTabInCommandline extends BaseCommand {
     // Reset
     commandLine.autoCompleteItems = [];
     commandLine.lastKeyPressed = key;
+
+    // Update anything like converting / -> \ on windows
+    vimState.currentCommandlineText = evalCmd;
+    vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
+    vimState.currentCommandlineText += restCmd;
     return vimState;
   }
 }

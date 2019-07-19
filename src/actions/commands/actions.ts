@@ -1988,12 +1988,32 @@ class CommandTabInCommandline extends BaseCommand {
     vimState.currentCommandlineText += restCmd;
   }
 
-  private static async readDirectory(
-    directoryUri: vscode.Uri,
+  private async readDirectory(
+    currentUri: vscode.Uri,
+    absolutePath: string,
     sep: string,
     addCurrentAndUp: boolean
   ) {
     try {
+      const isWindows = sep === path.win32.sep;
+      if (isWindows && !/^(\\\\.+\\)|([a-zA-Z]:\\)/.test(absolutePath)) {
+        // if it is windows and but don't have either
+        // UNC path or the windows drive
+        return [];
+      }
+      if (!isWindows && absolutePath[0] !== sep) {
+        return [];
+      }
+
+      const directoryUri = isWindows
+        ? // create new local Uri when it's on windows (doesn't support remote)
+          // Use file will also works for UNC paths like //server1/folder
+          vscode.Uri.file(absolutePath)
+        : currentUri.with({
+            // search local file with it's untitled
+            scheme: currentUri.scheme === 'untitled' ? 'file' : currentUri.scheme,
+            path: absolutePath,
+          });
       const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
       return directoryResult
         .map(
@@ -2012,8 +2032,6 @@ class CommandTabInCommandline extends BaseCommand {
       return <[string, vscode.FileType][]>[];
     }
   }
-
-  private handle;
 
   private separatePath(searchPath: string, separator: string) {
     // Speical handle for UNC path on windows
@@ -2121,21 +2139,16 @@ class CommandTabInCommandline extends BaseCommand {
       if (p.isAbsolute(dirName)) {
         newPath = dirName;
       } else {
-        newPath = p.join(p.dirname(currentUri.fsPath), dirName);
+        newPath = p.join(
+          this.separatePath(isWindows ? currentUri.fsPath : currentUri.path, p.sep)[0],
+          dirName
+        );
       }
 
-      const directoryUri = isWindows
-        ? // create new local Uri when it's on windows (doesn't support remote)
-          // Use file will also works for UNC paths like //server1/folder
-          vscode.Uri.file(newPath)
-        : currentUri.with({
-            // search local file with it's untitled
-            scheme: currentUri.scheme === 'untitled' ? 'file' : currentUri.scheme,
-            path: newPath,
-          });
       // TODO when on untitled page and :e <tab>, it will query / result
-      let filteredResult = await CommandTabInCommandline.readDirectory(
-        directoryUri,
+      let filteredResult = await this.readDirectory(
+        currentUri,
+        newPath,
         p.sep,
         // test if the baseName is . or ..
         /^\.\.?$/g.test(baseName)
@@ -2150,7 +2163,7 @@ class CommandTabInCommandline extends BaseCommand {
         commandLine.autoCompleteItems = items.length === 1 ? [] : items;
         commandLine.autoCompleteIndex = tabFoward ? 0 : items.length - 1;
         commandLine.preCompleteChatacterPos = currsorPos;
-        commandLine.preCompleteCommand = currentCmd;
+        commandLine.preCompleteCommand = evalCmd + restCmd;
 
         vimState.currentCommandlineText = evalCmd + items[commandLine.autoCompleteIndex];
         vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;

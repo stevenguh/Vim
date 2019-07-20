@@ -24,24 +24,10 @@ class CommandLine {
    */
   public lastKeyPressed = '';
 
-  /**
-   * for checking the last pressed key in command mode
-   *
-   */
   public autoCompleteIndex = 0;
-
   public autoCompleteItems: string[] = [];
-
-  public preCompleteChatacterPos = 0;
+  public preCompleteCharacterPos = 0;
   public preCompleteCommand = '';
-
-  public autoComplateCmd = '';
-
-  /**
-   * for checking the last pressed key in command mode
-   *
-   */
-  public autoCompleteText = '';
 
   public get commandlineHistoryIndex(): number {
     return this._commandLineHistoryIndex;

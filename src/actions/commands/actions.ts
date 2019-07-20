@@ -26,7 +26,6 @@ import * as operator from './../operator';
 import { Jump } from '../../jumps/jump';
 import { commandParsers } from '../../cmd_line/subparser';
 import { StatusBar } from '../../statusBar';
-import { GetAbsolutePath } from '../../util/path';
 import * as path from 'path';
 import untildify = require('untildify');
 
@@ -1920,54 +1919,6 @@ class CommandTabInCommandline extends BaseCommand {
     return this.keysPressed[0] === '\n';
   }
 
-  private autoComplete(completionItems: string[], vimState: VimState) {
-    // If the last key pressed which means to recyce the items
-    if (commandLine.lastKeyPressed !== '<tab>') {
-      if (/ /g.test(vimState.currentCommandlineText)) {
-        // The regex here will match any text after the space or any text after the last / if it is present
-        const search = <RegExpExecArray>(
-          /(?:.* .*\/|.* )(.*)/g.exec(vimState.currentCommandlineText)
-        );
-        commandLine.autoCompleteText = search[1];
-      } else {
-        commandLine.autoCompleteText = vimState.currentCommandlineText;
-      }
-      commandLine.autoCompleteIndex = 0;
-    }
-
-    completionItems = completionItems.filter(completionItem =>
-      completionItem.startsWith(commandLine.autoCompleteText)
-    );
-
-    if (
-      commandLine.lastKeyPressed === '<tab>' &&
-      commandLine.autoCompleteIndex < completionItems.length
-    ) {
-      commandLine.autoCompleteIndex += 1;
-    }
-    if (commandLine.autoCompleteIndex >= completionItems.length) {
-      commandLine.autoCompleteIndex = 0;
-    }
-
-    let result = completionItems[commandLine.autoCompleteIndex];
-    if (result === vimState.currentCommandlineText) {
-      result = completionItems[++commandLine.autoCompleteIndex % completionItems.length];
-    }
-
-    if (result !== undefined) {
-      if (/ /g.test(vimState.currentCommandlineText)) {
-        const searchArray = <RegExpExecArray>/(.* .*\/|.* )/g.exec(vimState.currentCommandlineText);
-        vimState.currentCommandlineText = searchArray[0] + result;
-      } else {
-        vimState.currentCommandlineText = result;
-      }
-      // Reset the cursor to the end
-      vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-    }
-
-    return vimState;
-  }
-
   private cycleCompletion(vimState: VimState, tabFoward: boolean) {
     const autoCompleteItems = commandLine.autoCompleteItems;
     if (autoCompleteItems.length === 0) {
@@ -1978,7 +1929,7 @@ class CommandTabInCommandline extends BaseCommand {
       ? (commandLine.autoCompleteIndex + 1) % autoCompleteItems.length
       : (commandLine.autoCompleteIndex - 1 + autoCompleteItems.length) % autoCompleteItems.length;
 
-    const lastPos = commandLine.preCompleteChatacterPos;
+    const lastPos = commandLine.preCompleteCharacterPos;
     const lastCmd = commandLine.preCompleteCommand;
     const evalCmd = lastCmd.slice(0, lastPos);
     const restCmd = lastCmd.slice(lastPos);
@@ -2002,6 +1953,7 @@ class CommandTabInCommandline extends BaseCommand {
         return [];
       }
       if (!isWindows && absolutePath[0] !== sep) {
+        // if it is not windows, but the absolute path doesn't begin with /
         return [];
       }
 
@@ -2068,54 +2020,39 @@ class CommandTabInCommandline extends BaseCommand {
       return vimState;
     }
 
+    let newCompletionItems: string[] = [];
     const currentCmd = vimState.currentCommandlineText;
     const currsorPos = vimState.statusBarCursorCharacterPos;
 
-    // sub string since vim do completion before the currsor
+    // Sub string since vim do completion before the currsor
     let evalCmd = currentCmd.slice(0, currsorPos);
     let restCmd = currentCmd.slice(currsorPos);
-    // If the cmd only contins nothing, or a word
-    if (/^\s*\w+$/.test(evalCmd)) {
-      // no key has entered after the completion so cycle through the list
-      let commands = Object.keys(commandParsers)
+
+    // \s* is the match the extra space before any character like ':  edit'
+    const cmdRegex = /^\s*\w+$/;
+    const fileRegex = /^\s*\w+\s+/g;
+    if (cmdRegex.test(evalCmd)) {
+      // Command completion
+      newCompletionItems = Object.keys(commandParsers)
         .filter(cmd => cmd.startsWith(evalCmd))
         // Remove the already typed portion in the array
         .map(cmd => cmd.slice(cmd.search(evalCmd) + evalCmd.length))
         .sort();
-
-      // TODO if there only one filled in immediately
-      commands = commands.length === 0 ? [''] : commands;
-
-      commandLine.autoCompleteIndex = tabFoward ? 0 : commands.length - 1;
-      commandLine.autoCompleteItems = commands;
-      commandLine.preCompleteChatacterPos = currsorPos;
-      commandLine.preCompleteCommand = currentCmd;
-
-      vimState.currentCommandlineText = evalCmd + commands[commandLine.autoCompleteIndex];
-      vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-      vimState.currentCommandlineText += restCmd;
-
-      commandLine.lastKeyPressed = key;
-      return vimState;
-    }
-
-    // file completion by searching if there is a space after the first word/command
-    // ideally it should be a process of white listing to selected commands like :e and :vsp
-    const regex = /\s*\w+\s+/g;
-    const result = regex.exec(evalCmd);
-    if (result) {
-      // TODO handle WIN 32 :(
-      let filePathInCmd = evalCmd.substring(regex.lastIndex);
+    } else if (fileRegex.exec(evalCmd)) {
+      // File completion by searching if there is a space after the first word/command
+      // ideally it should be a process of white-listing to selected commands like :e and :vsp
+      let filePathInCmd = evalCmd.substring(fileRegex.lastIndex);
       const currentUri = vscode.window.activeTextEditor!.document.uri;
       let isWindows: boolean;
       if (currentUri.scheme === 'untitled') {
-        // use the local fs
-        // can only do absulote path and local
+        // If the file is untitled, we can only use the absolute path on local fs
         isWindows = path !== path.posix;
       } else {
-        // 'file' return full path
-        // 'vscode-remote' retun full path
-        // and assuming other scheme return full path
+        // Asuming other schemes return full path
+        // e.g. 'file' and 'vscode-remote' both return full path
+        // Also only scheme that support windows is 'file', so we can
+        // safely check if fsPath returns '/' as the first character
+        // (fsPath in 'vscode-remote' on Windows return \ as separator instead of /)
         isWindows = currentUri.scheme === 'file' && currentUri.fsPath[0] !== '/';
       }
 
@@ -2123,14 +2060,13 @@ class CommandTabInCommandline extends BaseCommand {
       if (isWindows) {
         // normalize / to \ on windows
         filePathInCmd = filePathInCmd.replace(/\//g, '\\');
-
-        // And update on users display
-        evalCmd = evalCmd.slice(0, regex.lastIndex) + filePathInCmd;
+        // And update and command eventually
+        evalCmd = evalCmd.slice(0, fileRegex.lastIndex) + filePathInCmd;
       }
 
       if (currentUri.scheme === 'file' || currentUri.scheme === 'untitled') {
-        // if the currently opened tab is file or unititled, then we can utidify
-        // because the tab is in the user space
+        // We can untildify when the scheme is 'file' or 'untitled' because
+        // because the files we only support openeing files mounted on the host.
         filePathInCmd = untildify(filePathInCmd);
       }
 
@@ -2140,83 +2076,45 @@ class CommandTabInCommandline extends BaseCommand {
         newPath = dirName;
       } else {
         newPath = p.join(
+          // On Windows machine:
+          // fsPath returns Windows drive path (C:\xxx\) or UNC path (\\server\xxx)
+          // fsPath returns path with \ as separator even if 'vscode-remote' is connect to a linux box
+          //
+          // path will return /home/user for exmaple even 'vscode-remote' is used on windows
+          // as we relie of our isWindows detection
           this.separatePath(isWindows ? currentUri.fsPath : currentUri.path, p.sep)[0],
           dirName
         );
       }
 
-      // TODO when on untitled page and :e <tab>, it will query / result
-      let filteredResult = await this.readDirectory(
+      // test if the baseName is . or ..
+      const shouldAddDotItems = /^\.\.?$/g.test(baseName);
+      newCompletionItems = await this.readDirectory(
         currentUri,
         newPath,
         p.sep,
-        // test if the baseName is . or ..
-        /^\.\.?$/g.test(baseName)
-      );
-      filteredResult = filteredResult.filter(d => d[0].startsWith(baseName));
-      if (filteredResult.length > 0) {
-        const items = filteredResult
+        shouldAddDotItems
+      ).then(dirItems =>
+        dirItems
+          .filter(d => d[0].startsWith(baseName))
           .map(r => r[0].slice(r[0].search(baseName) + baseName.length))
-          .sort();
-
-        // if the length is 1 do not set the items so effective we filled command, with the next to to autofill base on the refiled command
-        commandLine.autoCompleteItems = items.length === 1 ? [] : items;
-        commandLine.autoCompleteIndex = tabFoward ? 0 : items.length - 1;
-        commandLine.preCompleteChatacterPos = currsorPos;
-        commandLine.preCompleteCommand = evalCmd + restCmd;
-
-        vimState.currentCommandlineText = evalCmd + items[commandLine.autoCompleteIndex];
-        vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
-        vimState.currentCommandlineText += restCmd;
-
-        commandLine.lastKeyPressed = key;
-        return vimState;
-      }
-      // let filteredResultNames = filteredResult.map(d => d[0]);
-      // 0 clear
-      // 1 fill and clear
-      // >1
-
-      // has a list that start with the entered name
-      // filteredResultNames = filteredResultNames.length === 0 ? [''] : filteredResultNames;
-
-      // If at root / or /c:/
-      // If starts with . and ..?
-      // If directory has only one directory, your can't cycle through, the tab is done
-      // If the directory has more than one directory or files, cycle from empty to other options
+          .sort()
+      );
     }
 
-    /*
-    // Seach for space if there space if the command
-    // const regex = /\s+/g;
-    // const  =
+    const newIndex = tabFoward ? 0 : newCompletionItems.length - 1;
+    commandLine.autoCompleteIndex = newIndex;
+    // If here only one items we fill cmd direct, so the next tab will not cycle the one item array
+    commandLine.autoCompleteItems = newCompletionItems.length <= 1 ? [] : newCompletionItems;
+    commandLine.preCompleteCharacterPos = currsorPos;
+    commandLine.preCompleteCommand = evalCmd + restCmd;
 
-    // const spaceAt = vimState.currentCommandlineText.search(/ /g);
-
-    if (!/ /g.test(vimState.currentCommandlineText)) {
-      // Command completion
-      const commands = Object.keys(commandParsers).sort();
-      vimState = this.autoComplete(commands, vimState);
-    } else {
-      // File Completion
-      const search = <RegExpExecArray>/.* (.*\/)/g.exec(vimState.currentCommandlineText);
-      let searchString = search !== null ? search[1] : '';
-
-      let uri = GetAbsolutePath(searchString);
-      const dirTuples = await vscode.workspace.fs.readDirectory(uri);
-      const names = dirTuples.map(d => d[0]);
-
-      vimState = this.autoComplete(names, vimState);
-    }
-*/
-    // Reset
-    commandLine.autoCompleteItems = [];
-    commandLine.lastKeyPressed = key;
-
-    // Update anything like converting / -> \ on windows
-    vimState.currentCommandlineText = evalCmd;
+    const completion = newCompletionItems.length === 0 ? '' : newCompletionItems[newIndex];
+    vimState.currentCommandlineText = evalCmd + completion;
     vimState.statusBarCursorCharacterPos = vimState.currentCommandlineText.length;
     vimState.currentCommandlineText += restCmd;
+
+    commandLine.lastKeyPressed = key;
     return vimState;
   }
 }

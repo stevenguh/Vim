@@ -26,7 +26,7 @@ import * as operator from './../operator';
 import { Jump } from '../../jumps/jump';
 import { commandParsers } from '../../cmd_line/subparser';
 import { StatusBar } from '../../statusBar';
-import { separatePath, readDirectory } from '../../util/path';
+import { readDirectory, getFullPath } from '../../util/path';
 import * as path from 'path';
 import untildify = require('untildify');
 
@@ -1976,58 +1976,24 @@ class CommandTabInCommandline extends BaseCommand {
       // ideally it should be a process of white-listing to selected commands like :e and :vsp
       let filePathInCmd = evalCmd.substring(fileRegex.lastIndex);
       const currentUri = vscode.window.activeTextEditor!.document.uri;
-      let isWindows: boolean;
-      if (currentUri.scheme === 'untitled') {
-        // If the file is untitled, we can only use the absolute path on local fs
-        isWindows = path !== path.posix;
-      } else {
-        // Assuming other schemes return full path
-        // e.g. 'file' and 'vscode-remote' both return full path
-        // Also only scheme that support windows is 'file', so we can
-        // safely check if fsPath returns '/' as the first character
-        // (fsPath in 'vscode-remote' on Windows return \ as separator instead of /)
-        isWindows = currentUri.scheme === 'file' && currentUri.fsPath[0] !== '/';
-      }
 
-      const p = isWindows ? path.win32 : path.posix;
-      if (isWindows) {
-        // normalize / to \ on windows
-        filePathInCmd = filePathInCmd.replace(/\//g, '\\');
-        // And update and command eventually
-        evalCmd = evalCmd.slice(0, fileRegex.lastIndex) + filePathInCmd;
-      }
-
-      if (currentUri.scheme === 'file' || currentUri.scheme === 'untitled') {
-        // We can untildify when the scheme is 'file' or 'untitled' because
-        // because the files we only support opening files mounted on the host.
-        filePathInCmd = untildify(filePathInCmd);
-      }
-
-      let [dirName, baseName] = separatePath(filePathInCmd, p.sep);
-      let newPath: string;
-      if (p.isAbsolute(dirName)) {
-        newPath = dirName;
-      } else {
-        newPath = p.join(
-          // On Windows machine:
-          // fsPath returns Windows drive path (C:\xxx\) or UNC path (\\server\xxx)
-          // fsPath returns path with \ as separator even if 'vscode-remote' is connect to a linux box
-          //
-          // path will return /home/user for example even 'vscode-remote' is used on windows
-          // as we relied of our isWindows detection
-          separatePath(isWindows ? currentUri.fsPath : currentUri.path, p.sep)[0],
-          dirName
-        );
-      }
+      const [fullPath, fullDirPath, dirName, baseName, updatedFilePathInCmd, p] = getFullPath(
+        filePathInCmd
+      );
+      filePathInCmd = updatedFilePathInCmd; // Update incase of windows
 
       // test if the baseName is . or ..
       const shouldAddDotItems = /^\.\.?$/g.test(baseName);
-      newCompletionItems = await readDirectory(currentUri, newPath, p.sep, shouldAddDotItems).then(
-        dirItems =>
-          dirItems
-            .filter(d => d[0].startsWith(baseName))
-            .map(r => r[0].slice(r[0].search(baseName) + baseName.length))
-            .sort()
+      newCompletionItems = await readDirectory(
+        currentUri,
+        fullDirPath,
+        p.sep,
+        shouldAddDotItems
+      ).then(dirItems =>
+        dirItems
+          .filter(d => d[0].startsWith(baseName))
+          .map(r => r[0].slice(r[0].search(baseName) + baseName.length))
+          .sort()
       );
     }
 

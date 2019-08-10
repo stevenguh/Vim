@@ -3,6 +3,7 @@ import * as node from '../node';
 import * as path from 'path';
 import * as util from 'util';
 import * as vscode from 'vscode';
+import { getFullPath } from '../../util/path';
 import untildify = require('untildify');
 import { Logger } from '../../util/logger';
 
@@ -35,10 +36,7 @@ async function createNewFile(filePath: string) {
     // for remote fs like remote ssh
     const activeUri = activeTextEditor.document.uri;
     const updatedUri = activeUri.with({ path: filePath });
-    await vscode.workspace.fs.writeFile(updatedUri, new Uint8Array(), {
-      create: true,
-      overwrite: false,
-    });
+    await vscode.workspace.fs.writeFile(updatedUri, new Uint8Array());
   } else {
     // fallback to local fs
     await util.promisify(fs.close)(await util.promisify(fs.open)(filePath, 'w'));
@@ -120,6 +118,7 @@ export class FileCommand extends node.CommandBase {
       this._arguments.name = <string>untildify(this.arguments.name);
     }
 
+    let fileUrl;
     // Using the empty string will request to open a file
     if (this._arguments.name === '') {
       // No name on split is fine and just return
@@ -129,23 +128,24 @@ export class FileCommand extends node.CommandBase {
 
       const fileList = await vscode.window.showOpenDialog({});
       if (fileList) {
-        filePath = fileList[0].fsPath;
+        fileUrl = fileList[0];
       }
     } else {
       // Using a filename, open or create the file
       // remove file://
       this._arguments.name = this._arguments.name.replace(/^file:\/\//, '');
 
-      filePath = path.isAbsolute(this._arguments.name)
-        ? path.normalize(this._arguments.name)
-        : path.join(path.dirname(editorFilePath), this._arguments.name);
+      const [fullPath, fullDirPath, dirName, baseName, updatedFilePathInCmd, p] = getFullPath(
+        this._arguments.name
+      );
 
+      filePath = fullPath;
       if (filePath !== editorFilePath) {
         let fileExists = await doesFileExist(filePath);
         if (!fileExists) {
           // if file does not exist
           // try to find it with the same extension as the current file
-          const pathWithExt = filePath + path.extname(editorFilePath);
+          const pathWithExt = filePath + p.extname(editorFilePath);
           fileExists = await doesFileExist(pathWithExt);
           if (fileExists) {
             filePath = pathWithExt;
@@ -155,15 +155,14 @@ export class FileCommand extends node.CommandBase {
         if (!fileExists) {
           if (this._arguments.createFileIfNotExists) {
             await createNewFile(filePath);
-          } else {
-            this._logger.error(`${filePath} does not exist.`);
-            return;
           }
         }
+
+        fileUrl = editorFileUri.with({ path: filePath });
       }
     }
 
-    const doc = await vscode.workspace.openTextDocument(filePath);
+    const doc = await vscode.workspace.openTextDocument(fileUrl);
     vscode.window.showTextDocument(doc);
 
     if (this.arguments.lineNumber) {

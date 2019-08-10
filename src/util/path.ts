@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 
 export function separatePath(searchPath: string, separator: string) {
-  // Speical handle for UNC path on windows
+  // Special handle for UNC path on windows
   const _fwSlash = '\\';
   if (separator === path.win32.sep) {
     if (searchPath[0] === _fwSlash && searchPath[1] === _fwSlash) {

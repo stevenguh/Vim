@@ -1920,13 +1920,13 @@ class CommandTabInCommandline extends BaseCommand {
     return this.keysPressed[0] === '\n';
   }
 
-  private cycleCompletion(vimState: VimState, tabFoward: boolean) {
+  private cycleCompletion(vimState: VimState, tabForward: boolean) {
     const autoCompleteItems = commandLine.autoCompleteItems;
     if (autoCompleteItems.length === 0) {
       return;
     }
 
-    commandLine.autoCompleteIndex = tabFoward
+    commandLine.autoCompleteIndex = tabForward
       ? (commandLine.autoCompleteIndex + 1) % autoCompleteItems.length
       : (commandLine.autoCompleteIndex - 1 + autoCompleteItems.length) % autoCompleteItems.length;
 
@@ -1942,24 +1942,24 @@ class CommandTabInCommandline extends BaseCommand {
 
   public async exec(position: Position, vimState: VimState): Promise<VimState> {
     const key = this.keysPressed[0];
-    const tabFoward = key === '<tab>';
+    const tabForward = key === '<tab>';
 
     if (
       commandLine.autoCompleteItems.length !== 0 &&
       (commandLine.lastKeyPressed === '<tab>' || commandLine.lastKeyPressed === '<shift+tab>')
     ) {
-      this.cycleCompletion(vimState, tabFoward);
+      this.cycleCompletion(vimState, tabForward);
       commandLine.lastKeyPressed = key;
       return vimState;
     }
 
     let newCompletionItems: string[] = [];
     const currentCmd = vimState.currentCommandlineText;
-    const currsorPos = vimState.statusBarCursorCharacterPos;
+    const cursorPos = vimState.statusBarCursorCharacterPos;
 
-    // Sub string since vim do completion before the currsor
-    let evalCmd = currentCmd.slice(0, currsorPos);
-    let restCmd = currentCmd.slice(currsorPos);
+    // Sub string since vim do completion before the cursor
+    let evalCmd = currentCmd.slice(0, cursorPos);
+    let restCmd = currentCmd.slice(cursorPos);
 
     // \s* is the match the extra space before any character like ':  edit'
     const cmdRegex = /^\s*\w+$/;
@@ -1981,7 +1981,7 @@ class CommandTabInCommandline extends BaseCommand {
         // If the file is untitled, we can only use the absolute path on local fs
         isWindows = path !== path.posix;
       } else {
-        // Asuming other schemes return full path
+        // Assuming other schemes return full path
         // e.g. 'file' and 'vscode-remote' both return full path
         // Also only scheme that support windows is 'file', so we can
         // safely check if fsPath returns '/' as the first character
@@ -1999,7 +1999,7 @@ class CommandTabInCommandline extends BaseCommand {
 
       if (currentUri.scheme === 'file' || currentUri.scheme === 'untitled') {
         // We can untildify when the scheme is 'file' or 'untitled' because
-        // because the files we only support openeing files mounted on the host.
+        // because the files we only support opening files mounted on the host.
         filePathInCmd = untildify(filePathInCmd);
       }
 
@@ -2013,8 +2013,8 @@ class CommandTabInCommandline extends BaseCommand {
           // fsPath returns Windows drive path (C:\xxx\) or UNC path (\\server\xxx)
           // fsPath returns path with \ as separator even if 'vscode-remote' is connect to a linux box
           //
-          // path will return /home/user for exmaple even 'vscode-remote' is used on windows
-          // as we relie of our isWindows detection
+          // path will return /home/user for example even 'vscode-remote' is used on windows
+          // as we relied of our isWindows detection
           separatePath(isWindows ? currentUri.fsPath : currentUri.path, p.sep)[0],
           dirName
         );
@@ -2031,11 +2031,11 @@ class CommandTabInCommandline extends BaseCommand {
       );
     }
 
-    const newIndex = tabFoward ? 0 : newCompletionItems.length - 1;
+    const newIndex = tabForward ? 0 : newCompletionItems.length - 1;
     commandLine.autoCompleteIndex = newIndex;
     // If here only one items we fill cmd direct, so the next tab will not cycle the one item array
     commandLine.autoCompleteItems = newCompletionItems.length <= 1 ? [] : newCompletionItems;
-    commandLine.preCompleteCharacterPos = currsorPos;
+    commandLine.preCompleteCharacterPos = cursorPos;
     commandLine.preCompleteCommand = evalCmd + restCmd;
 
     const completion = newCompletionItems.length === 0 ? '' : newCompletionItems[newIndex];

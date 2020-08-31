@@ -1,23 +1,21 @@
-import * as vscode from 'vscode';
-
-import { RegisterAction, BaseCommand } from '../base';
-import { CommandShowCommandHistory, CommandShowSearchHistory } from './actions';
-import { Mode } from '../../mode/mode';
-import { VimState } from '../../state/vimState';
 import { commandLine } from '../../cmd_line/commandLine';
-import { globalState } from '../../state/globalState';
-import { Register, RegisterMode } from '../../register/register';
-import { reportSearch } from '../../util/statusBarTextUtils';
-import { RecordedState } from '../../state/recordedState';
-import { TextEditor } from '../../textEditor';
-import { StatusBar } from '../../statusBar';
 import { commandParsers } from '../../cmd_line/subparser';
-import { getPathDetails, readDirectory } from '../../util/path';
-import { Clipboard } from '../../util/clipboard';
 import { Position } from '../../common/motion/position';
-import { VimError, ErrorCode } from '../../error';
+import { ErrorCode, VimError } from '../../error';
+import { Mode } from '../../mode/mode';
+import { Register, RegisterMode } from '../../register/register';
+import { globalState } from '../../state/globalState';
+import { RecordedState } from '../../state/recordedState';
 import { SearchDirection } from '../../state/searchState';
+import { VimState } from '../../state/vimState';
+import { StatusBar } from '../../statusBar';
+import { TextEditor } from '../../textEditor';
+import { Clipboard } from '../../util/clipboard';
+import { getBaseDirectoryUri, readDirectory, resolveDirectoryPath } from '../../util/path';
+import { reportSearch } from '../../util/statusBarTextUtils';
 import { scrollView } from '../../util/util';
+import { BaseCommand, RegisterAction } from '../base';
+import { CommandShowCommandHistory, CommandShowSearchHistory } from './actions';
 
 /**
  * Commands that are only relevant when entering a command or search
@@ -90,30 +88,25 @@ class CommandTabInCommandline extends BaseCommand {
       // File completion by searching if there is a space after the first word/command
       // ideally it should be a process of white-listing to selected commands like :e and :vsp
       let filePathInCmd = evalCmd.substring(fileRegex.lastIndex);
-      const currentUri = vscode.window.activeTextEditor!.document.uri;
-      const isRemote = !!vscode.env.remoteName;
 
-      const { fullDirPath, baseName, partialPath, path: p } = getPathDetails(
-        filePathInCmd,
-        currentUri,
-        isRemote
-      );
-      // Update the evalCmd in case of windows, where we change / to \
-      evalCmd = evalCmd.slice(0, fileRegex.lastIndex) + partialPath;
+      const baseUri = getBaseDirectoryUri();
+      if (baseUri) {
+        const { directoryUri, basename, partialPath } = resolveDirectoryPath(
+          baseUri,
+          filePathInCmd
+        );
 
-      // test if the baseName is . or ..
-      const shouldAddDotItems = /^\.\.?$/g.test(baseName);
-      const dirItems = await readDirectory(
-        fullDirPath,
-        p.sep,
-        currentUri,
-        isRemote,
-        shouldAddDotItems
-      );
-      newCompletionItems = dirItems
-        .filter((name) => name.startsWith(baseName))
-        .map((name) => name.slice(name.search(baseName) + baseName.length))
-        .sort();
+        // Update the evalCmd in case of windows, where we change / to \
+        evalCmd = evalCmd.slice(0, fileRegex.lastIndex) + partialPath;
+
+        // test if the baseName is . or ..
+        const shouldAddDotItems = /^\.\.?$/g.test(basename);
+        const dirItems = await readDirectory(directoryUri, shouldAddDotItems);
+        newCompletionItems = dirItems
+          .filter((name) => name.startsWith(basename))
+          .map((name) => name.slice(name.search(basename) + basename.length))
+          .sort();
+      }
     }
 
     const newIndex = isTabForward ? 0 : newCompletionItems.length - 1;

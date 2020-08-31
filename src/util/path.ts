@@ -1,11 +1,14 @@
-import * as vscode from 'vscode';
 import * as path from 'path';
+import * as vscode from 'vscode';
+import { Uri, workspace } from 'vscode';
+import { CharCode } from './charCode';
+import { UriScheme } from './uriSchema';
 import untildify = require('untildify');
 
 /**
  * A interface to the path in the node.js.
  */
-interface Path {
+interface PlatformPath {
   normalize(p: string): string;
   join(...paths: string[]): string;
   resolve(...pathSegments: string[]): string;
@@ -82,7 +85,7 @@ interface PathDetails {
    * The correct node js path for the partial path. This will be either
    * path.win32 or path.posix for further processing.
    */
-  path: Path;
+  path: PlatformPath;
 }
 
 /**
@@ -131,7 +134,10 @@ export function getPathDetails(
   }
   const updatedPartialPath = partialPath;
 
-  if (currentUri.scheme === 'file' || (currentUri.scheme === 'untitled' && !isRemote)) {
+  if (
+    currentUri.scheme === UriScheme.File ||
+    (currentUri.scheme === UriScheme.Untitled && !isRemote)
+  ) {
     // We can untildify when the scheme is 'file' or 'untitled' on local fs because
     // because we only support opening files mounted locally.
     partialPath = untildify(partialPath);
@@ -162,6 +168,122 @@ export function getPathDetails(
     baseName,
     partialPath: updatedPartialPath,
     path: p,
+  };
+}
+// Schema: vscode-remote
+// Authority: "ssh-remote+192.168.1.1"
+
+// Schema: "file"
+// Authority: "wsl$"
+
+// Local untitled
+// Schema: untitled
+// Authority: """
+// Path: "Untitled-1"
+
+// Schema: untitled
+// Authority: """
+// Path: "/c:/path/to/file"
+
+// Schema: untitled
+// Authority: "ssh-remote+192.168.1.1"
+// Path: "/c:/path/to/file"
+
+export function getBaseDirectoryUri() {
+  let uri = vscode.window.activeTextEditor?.document.uri;
+  if (uri) {
+    const folder = workspace.getWorkspaceFolder(uri);
+    if (folder) {
+      // If the currently open editor is in a workspace
+      // use that directory instead
+      uri = folder.uri;
+    } else {
+      // if the active editor is not in a workspace
+      // use folder of that file
+      if (uri.scheme === UriScheme.File || uri.scheme === UriScheme.VscodeRemote) {
+        uri = joinPath(uri, '../');
+      } else {
+        // If it is untitled or other schemes, try looking into the workspace
+        const workspaceUri = vscode.workspace.workspaceFolders?.[0].uri;
+        if (workspaceUri) {
+          // Keep the untitled instead of undefined if workspace is undefined
+          uri = workspaceUri;
+        }
+      }
+    }
+  } else {
+    uri = vscode.workspace.workspaceFolders?.[0].uri;
+  }
+
+  return uri;
+}
+
+/**
+ * Modified from https://github.com/microsoft/vscode/blob/f74e473238aca7b79c08be761d99a0232838ca4c/src/vs/base/common/uri.ts#L346-L357
+ */
+export function joinPath(uri: Uri, ...pathFragment: string[]) {
+  const platformPath = getPlatformPath(uri);
+  const newPath = platformPath.join(uriToFsPath(uri), ...pathFragment);
+  return createFileUri(newPath, uri, platformPath);
+}
+
+export function resolveDirectoryPath(baseUri: Uri, partialPath: string) {
+  // 1. Get the platform path
+  let platformPath: PlatformPath;
+  if (baseUri.scheme === UriScheme.VscodeRemote) {
+    // guess the platform base on the uri
+    platformPath = getPlatformPath(baseUri);
+  } else {
+    // For UriScheme.File and UriScheme.Untitled
+    // Use host machine's platform
+    platformPath = path;
+  }
+
+  // 2. Normalized for display if it is Windows
+  let normalizedPartialPath = partialPath;
+  if (platformPath.sep === path.win32.sep) {
+    // normalize / to \ on windows
+    partialPath = partialPath.replace(/\//g, '\\');
+    normalizedPartialPath = partialPath;
+  }
+
+  // 3. Untildify if necessary. This only only be done on file and untitled
+  // because those are the types that we assume we will use the local machine
+  // hence can be untildify.
+  if (baseUri.scheme === UriScheme.File || baseUri.scheme === UriScheme.Untitled) {
+    partialPath = untildify(partialPath);
+  }
+
+  // 4. Get the directory path base on the partial path
+  let dirName: string;
+  let baseName: string;
+  let directoryUri: Uri;
+  if (baseUri.scheme === UriScheme.File || baseUri.scheme === UriScheme.VscodeRemote) {
+    [dirName, baseName] = separatePath(partialPath, platformPath.sep);
+    const absolute = platformPath.isAbsolute(dirName);
+    if (absolute) {
+      directoryUri = createFileUri(dirName, baseUri, platformPath);
+    } else {
+      partialPath = platformPath.join(uriToFsPath(baseUri), dirName);
+      directoryUri = createFileUri(partialPath, baseUri, platformPath);
+    }
+  } else {
+    // For UriScheme.Untitled and the rest
+    // Only works for local path
+    [dirName, baseName] = separatePath(partialPath, platformPath.sep);
+    directoryUri = createFileUri(dirName, baseUri, platformPath);
+  }
+
+  // 5. Get the file path base on the partial path
+  const filePath = platformPath.join(uriToFsPath(directoryUri), baseName);
+  const fileUri = createFileUri(filePath, baseUri, platformPath);
+
+  return {
+    fileUri,
+    directoryUri,
+    basename: baseName,
+    dirname: dirName,
+    partialPath: normalizedPartialPath,
   };
 }
 
@@ -205,29 +327,9 @@ export function resolveUri(
       });
 }
 
-/**
- * Get the name of the items in a directory.
- * @param absolutePath A string of absolute path.
- * @param sep The separator of the absolutePath.
- * @param currentUri A uri of the currently active document.
- * @param isRemote A boolean to indicate if the current instance is in remote.
- * @param addCurrentAndUp A boolean to indicate if .{$sep} and ..${sep} should be add to the result
- * @return A Promise which resolves to an array of string. The array can be empty if the path specified is actual
- * empty, of if the absolutePath specified is invalid, or if any error occurred during directory reading.
- * The string in the array will have sep appended if it is a directory.
- */
-export async function readDirectory(
-  absolutePath: string,
-  sep: string,
-  currentUri: vscode.Uri,
-  isRemote: boolean,
-  addCurrentAndUp: boolean
-) {
+export async function readDirectory(directoryUri: Uri, addCurrentAndUp: boolean) {
   try {
-    const directoryUri = resolveUri(absolutePath, sep, currentUri, isRemote);
-    if (directoryUri === null) {
-      return [];
-    }
+    const sep = getPlatformPath(directoryUri).sep;
     const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
     return (
       directoryResult
@@ -243,4 +345,131 @@ export async function readDirectory(
 
 export function join(...paths: string[]): string {
   return path.join(...paths);
+}
+
+function hasDriveLetter(fsPath: string, offset = 0): boolean {
+  if (fsPath.length >= 2 + offset) {
+    // Checks C:\Users
+    //        ^^
+    const char0 = fsPath.charCodeAt(0 + offset);
+    const char1 = fsPath.charCodeAt(1 + offset);
+    return (
+      char1 === CharCode.Colon &&
+      ((char0 >= CharCode.A && char0 <= CharCode.Z) || (char0 >= CharCode.a && char0 <= CharCode.z))
+    );
+  }
+  return false;
+}
+
+function isPathSeparator(code: number): boolean {
+  return code === CharCode.Slash || code === CharCode.Backslash;
+}
+
+function isUNC(fsPath: string) {
+  if (fsPath.length >= 3) {
+    // Checks \\localhost\shares\ddd
+    //        ^^^
+    return (
+      isPathSeparator(fsPath.charCodeAt(0)) &&
+      isPathSeparator(fsPath.charCodeAt(1)) &&
+      !isPathSeparator(fsPath.charCodeAt(2))
+    );
+  }
+  return false;
+}
+
+/**
+ * Get the platform path base on the uri.
+ *
+ * This is similar with the assumption in `uriToFsPath`. If the path has drive letter
+ * or is an UNC path, assumed the uri to be a Windows path.
+ */
+function getPlatformPath(uri: Uri) {
+  const fsPath = uriToFsPath(uri);
+  return hasDriveLetter(fsPath) || isUNC(fsPath) ? path.win32 : path.posix;
+}
+
+/**
+ * Compute `fsPath` with slash normalized to `/` for the given uri.
+ *
+ * This is what vscode uses internally to compute uri.fsPath; however,
+ * backslash conversion for Windows host is removed, and drive letter is always normalized to uppercase.
+ *
+ * The problems with the internal `uri.fsPath`:
+ *  - Windows machine remoting into a linux will return a `\` as separator
+ *  - *nix machine remoting into a windows will return `/` as separator
+ *
+ * Modified from https://github.com/microsoft/vscode/blob/f74e473238aca7b79c08be761d99a0232838ca4c/src/vs/base/common/uri.ts#L579-L604
+ */
+function uriToFsPath(uri: Uri): string {
+  let value: string;
+  if (uri.authority && uri.path.length > 1 && uri.scheme === 'file') {
+    // unc path: file://shares/c$/far/boo
+    value = `//${uri.authority}${uri.path}`;
+  } else if (
+    // e.g. local file and vscode-remote file
+    uri.path.charCodeAt(0) === CharCode.Slash &&
+    hasDriveLetter(uri.path, 1)
+  ) {
+    // windows drive letter: file:///c:/far/boo
+    // Normalized drive letter -> C:/far/boo
+    value = uri.path[1].toUpperCase() + uri.path.substr(2);
+  } else {
+    // other path
+    value = uri.path;
+  }
+  return value;
+}
+
+const _slash = '/';
+
+function equalsIgnoreCase(a1: string, a2: string) {
+  return a1.length === a1.length && a1.toLowerCase() === a2.toLowerCase();
+}
+
+function isEqualAuthority(a1: string, a2: string) {
+  return a1 === a2 || equalsIgnoreCase(a1, a2);
+}
+
+/**
+ * Create a uri that doesn't base on the local system
+ * Modified from https://github.com/microsoft/vscode/blob/f74e473238aca7b79c08be761d99a0232838ca4c/src/vs/base/common/uri.ts#L302-L327
+ * @param filePath
+ * @param platformPath
+ * @param baseUri
+ */
+function createFileUri(filePath: string, baseUri: Uri, platformPath?: PlatformPath) {
+  platformPath = platformPath ?? getPlatformPath(baseUri);
+  // Use local file system if the uri is untitled
+  const scheme = baseUri.scheme === UriScheme.Untitled ? UriScheme.File : baseUri.scheme;
+  let authority = baseUri.authority;
+
+  // normalize to fwd-slashes on windows,
+  // on other systems bwd-slashes are valid
+  // filename character, eg /f\oo/ba\r.txt
+  if (platformPath.sep === path.win32.sep) {
+    // isWindow
+    filePath = filePath.replace(/\\/g, _slash);
+  }
+
+  // check for authority as used in UNC shares
+  // or use the fsPath as given
+  if (filePath[0] === _slash && filePath[1] === _slash) {
+    const idx = filePath.indexOf(_slash, 2);
+    if (idx === -1) {
+      authority = filePath.substring(2);
+      filePath = _slash;
+    } else {
+      authority = filePath.substring(2, idx);
+      filePath = filePath.substring(idx) || _slash;
+    }
+  }
+
+  if (filePath.length > 0 && filePath.charCodeAt(0) !== CharCode.Slash) {
+    // Add slash for drive path and UNC
+    filePath = _slash + filePath;
+  }
+
+  // Note: cannot open UNC path with vscode remote
+  return baseUri.with({ path: filePath, authority, scheme });
 }

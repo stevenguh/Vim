@@ -1,9 +1,19 @@
 import * as vscode from 'vscode';
 import { Logger } from '../../util/logger';
-import { getPathDetails, resolveUri } from '../../util/path';
+import { getBaseDirectoryUri, resolveDirectoryPath } from '../../util/path';
+import { UriScheme } from '../../util/uriSchema';
 import * as node from '../node';
 import { doesFileExist } from 'platform/fs';
 import untildify = require('untildify');
+
+async function doesFileExist(fileUri: vscode.Uri) {
+  try {
+    await vscode.workspace.fs.stat(fileUri);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export enum FilePosition {
   NewWindowVerticalSplit,
@@ -39,7 +49,6 @@ export class FileCommand extends node.CommandBase {
 
     // Need to do this before the split since it loses the activeTextEditor
     const editorFileUri = vscode.window.activeTextEditor!.document.uri;
-    let editorFilePath = editorFileUri.fsPath;
 
     // Do the split if requested
     let split = false;
@@ -69,7 +78,7 @@ export class FileCommand extends node.CommandBase {
     }
 
     // Only untidify when the currently open page and file completion is local
-    if (this.arguments.name && editorFileUri.scheme === 'file') {
+    if (this.arguments.name && editorFileUri.scheme === UriScheme.File) {
       this._arguments.name = untildify(this.arguments.name);
     }
 
@@ -89,38 +98,21 @@ export class FileCommand extends node.CommandBase {
       // remove file://
       this._arguments.name = this.arguments.name.replace(/^file:\/\//, '');
 
-      // Using a filename, open or create the file
-      const isRemote = !!vscode.env.remoteName;
-      const { fullPath, path: p } = getPathDetails(this.arguments.name, editorFileUri, isRemote);
+      const baseUri = getBaseDirectoryUri();
+      if (!baseUri) {
+        return;
+      }
+
+      const uriPath = resolveDirectoryPath(baseUri, this._arguments.name).fileUri;
+
       // Only if the expanded path of the full path is different than
       // the currently opened window path
-      if (fullPath !== editorFilePath) {
-        const uriPath = resolveUri(fullPath, p.sep, editorFileUri, isRemote);
-        if (uriPath === null) {
-          // return if the path is invalid
-          return;
-        }
-
-        let fileExists = await doesFileExist(uriPath);
+      if (uriPath.fsPath !== editorFileUri.fsPath) {
+        const fileExists = await doesFileExist(uriPath);
         if (fileExists) {
           // If the file without the added ext exists
           fileUri = uriPath;
         } else {
-          // if file does not exist
-          // try to find it with the same extension as the current file
-          const pathWithExt = fullPath + p.extname(editorFilePath);
-          const uriPathWithExt = resolveUri(pathWithExt, p.sep, editorFileUri, isRemote);
-          if (uriPathWithExt !== null) {
-            fileExists = await doesFileExist(uriPathWithExt);
-            if (fileExists) {
-              // if the file with the added ext exists
-              fileUri = uriPathWithExt;
-            }
-          }
-        }
-
-        // If both with and without ext path do not exist
-        if (!fileExists) {
           if (this.arguments.createFileIfNotExists) {
             // Change the scheme to untitled to open an
             // untitled tab

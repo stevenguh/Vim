@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import { Logger } from '../../util/logger';
-import { getBaseDirectoryUri, resolveDirectoryPath } from '../../util/path';
+import { getBaseDirectoryUri, resolveDirectoryPath, isValidFileUri } from '../../util/path';
 import { UriScheme } from '../../util/uriSchema';
 import * as node from '../node';
 import { doesFileExist } from 'platform/fs';
@@ -103,7 +103,13 @@ export class FileCommand extends node.CommandBase {
         return;
       }
 
-      const uriPath = resolveDirectoryPath(baseUri, this._arguments.name).fileUri;
+      const { fileUri: uriPath, platformPath } = resolveDirectoryPath(
+        baseUri,
+        this._arguments.name
+      );
+      if (!isValidFileUri(uriPath, platformPath)) {
+        return;
+      }
 
       // Only if the expanded path of the full path is different than
       // the currently opened window path

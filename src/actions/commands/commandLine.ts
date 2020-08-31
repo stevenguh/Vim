@@ -11,7 +11,12 @@ import { VimState } from '../../state/vimState';
 import { StatusBar } from '../../statusBar';
 import { TextEditor } from '../../textEditor';
 import { Clipboard } from '../../util/clipboard';
-import { getBaseDirectoryUri, readDirectory, resolveDirectoryPath } from '../../util/path';
+import {
+  getBaseDirectoryUri,
+  readDirectory,
+  resolveDirectoryPath,
+  isValidFileUri,
+} from '../../util/path';
 import { reportSearch } from '../../util/statusBarTextUtils';
 import { scrollView } from '../../util/util';
 import { BaseCommand, RegisterAction } from '../base';
@@ -91,7 +96,7 @@ class CommandTabInCommandline extends BaseCommand {
 
       const baseUri = getBaseDirectoryUri();
       if (baseUri) {
-        const { directoryUri, basename, partialPath } = resolveDirectoryPath(
+        const { directoryUri, basename, partialPath, platformPath } = resolveDirectoryPath(
           baseUri,
           filePathInCmd
         );
@@ -99,13 +104,15 @@ class CommandTabInCommandline extends BaseCommand {
         // Update the evalCmd in case of windows, where we change / to \
         evalCmd = evalCmd.slice(0, fileRegex.lastIndex) + partialPath;
 
-        // test if the baseName is . or ..
-        const shouldAddDotItems = /^\.\.?$/g.test(basename);
-        const dirItems = await readDirectory(directoryUri, shouldAddDotItems);
-        newCompletionItems = dirItems
-          .filter((name) => name.startsWith(basename))
-          .map((name) => name.slice(name.search(basename) + basename.length))
-          .sort();
+        if (isValidFileUri(directoryUri, platformPath)) {
+          // test if the baseName is . or ..
+          const shouldAddDotItems = /^\.\.?$/g.test(basename);
+          const dirItems = await readDirectory(directoryUri, shouldAddDotItems, platformPath);
+          newCompletionItems = dirItems
+            .filter((name) => name.startsWith(basename))
+            .map((name) => name.slice(name.search(basename) + basename.length))
+            .sort();
+        }
       }
     }
 

@@ -284,6 +284,7 @@ export function resolveDirectoryPath(baseUri: Uri, partialPath: string) {
     basename: baseName,
     dirname: dirName,
     partialPath: normalizedPartialPath,
+    platformPath,
   };
 }
 
@@ -327,9 +328,14 @@ export function resolveUri(
       });
 }
 
-export async function readDirectory(directoryUri: Uri, addCurrentAndUp: boolean) {
+export async function readDirectory(
+  directoryUri: Uri,
+  addCurrentAndUp: boolean,
+  platformPath?: PlatformPath
+) {
   try {
-    const sep = getPlatformPath(directoryUri).sep;
+    platformPath = platformPath ?? getPlatformPath(directoryUri);
+    const sep = platformPath.sep;
     const directoryResult = await vscode.workspace.fs.readDirectory(directoryUri);
     return (
       directoryResult
@@ -365,14 +371,14 @@ function isPathSeparator(code: number): boolean {
   return code === CharCode.Slash || code === CharCode.Backslash;
 }
 
-function isUNC(fsPath: string) {
+function isUNC(fsPath: string, offset = 0) {
   if (fsPath.length >= 3) {
     // Checks \\localhost\shares\ddd
     //        ^^^
     return (
-      isPathSeparator(fsPath.charCodeAt(0)) &&
-      isPathSeparator(fsPath.charCodeAt(1)) &&
-      !isPathSeparator(fsPath.charCodeAt(2))
+      isPathSeparator(fsPath.charCodeAt(0 + offset)) &&
+      isPathSeparator(fsPath.charCodeAt(1 + offset)) &&
+      !isPathSeparator(fsPath.charCodeAt(2 + offset))
     );
   }
   return false;
@@ -403,7 +409,7 @@ function getPlatformPath(uri: Uri) {
  */
 function uriToFsPath(uri: Uri): string {
   let value: string;
-  if (uri.authority && uri.path.length > 1 && uri.scheme === 'file') {
+  if (uri.authority && uri.path.length > 1 && uri.scheme === UriScheme.File) {
     // unc path: file://shares/c$/far/boo
     value = `//${uri.authority}${uri.path}`;
   } else if (
@@ -472,4 +478,21 @@ function createFileUri(filePath: string, baseUri: Uri, platformPath?: PlatformPa
 
   // Note: cannot open UNC path with vscode remote
   return baseUri.with({ path: filePath, authority, scheme });
+}
+
+export function isValidFileUri(uri: Uri, platformPath: PlatformPath) {
+  let isValid = uri.path.charCodeAt(0) === CharCode.Slash;
+  if (isValid && platformPath === path.win32) {
+    if (uri.authority && uri.path.length > 1 && uri.scheme === UriScheme.File) {
+      // unc path: file://shares/c$/far/boo
+      // value = `//${uri.authority}${uri.path}`;
+      // test to make it has a complete UNC path
+      isValid = /^\/.+\//.test(uri.path);
+    } else {
+      // Has letter and closing slash
+      isValid = hasDriveLetter(uri.path, 1) && uri.path.charCodeAt(3) === CharCode.Slash;
+    }
+  }
+
+  return isValid;
 }
